@@ -449,18 +449,22 @@ local function GetHumanoid(plr)
     return nil
 end
 
-local function IsVisible(part)
+local function IsVisible(part, targetPlr)
     if not part then return false end
     if not VisibleCheckEnabled then return true end
     local origin = Camera.CFrame.Position
     local dir = (part.Position - origin).Unit
     local dist = (part.Position - origin).Magnitude
+    local filter = {LocalPlayer.Character, Camera}
+    if targetPlr and targetPlr.Character then
+        table.insert(filter, targetPlr.Character)
+    end
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Blacklist
-    params.FilterDescendantsInstances = {LocalPlayer.Character, Camera}
+    params.FilterDescendantsInstances = filter
     local result = workspace:Raycast(origin, dir * dist, params)
     if result and result.Instance then
-        return result.Instance:IsDescendantOf(LocalPlayer.Character)
+        return false
     end
     return true
 end
@@ -480,7 +484,7 @@ local function GetTargetInFOV()
                 local sp, onScreen = Camera:WorldToViewportPoint(head.Position)
                 if onScreen then
                     local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                    if d <= bestDist and IsVisible(head) then
+                    if d <= bestDist and IsVisible(head, plr) then
                         if d < bestDist then
                             best = plr
                             bestDist = d
@@ -530,25 +534,42 @@ RunService:BindToRenderStep("AimbotLoop", 200, function()
 end)
 
 -- ================================================================
--- 🔫 SILENT AIM - Hook no Mouse.Hit e Mouse.Target
+-- 🔫 SILENT AIM - Hook leve só no Mouse
 -- ================================================================
-if DrawingAvailable then
-    local __index
-    __index = hookmetamethod(game, "__index", function(self, key)
-        if SilentAimEnabled and CurrentTarget and IsAlive(CurrentTarget) and (self == Mouse or self == LocalPlayer:GetMouse()) then
-            local head = GetHead(CurrentTarget)
-            if head then
-                if key == "Hit" then
-                    return CFrame.new(head.Position)
-                end
-                if key == "Target" then
-                    return head
+local SilentHooked = false
+local function SetupSilentAim()
+    if SilentHooked then return end
+    
+    -- Tenta hook direto no metatable do Mouse (mais leve)
+    local mt = nil
+    local ok1, r1 = pcall(getrawmetatable, Mouse)
+    if ok1 and r1 then mt = r1 end
+    
+    if not mt then
+        -- Fallback: metatable do jogo (mais pesado, mas funciona)
+        local ok2, r2 = pcall(getrawmetatable, game)
+        if ok2 and r2 then mt = r2 end
+    end
+    
+    if not mt then return end
+    
+    SilentHooked = true
+    local oldIdx = mt.__index
+    mt.__index = function(s, k)
+        if SilentAimEnabled and CurrentTarget and IsAlive(CurrentTarget) then
+            if s == Mouse then
+                local hd = GetHead(CurrentTarget)
+                if hd then
+                    if k == "Hit" then return CFrame.new(hd.Position) end
+                    if k == "Target" then return hd end
                 end
             end
         end
-        return __index(self, key)
-    end)
+        return oldIdx(s, k)
+    end
 end
+
+pcall(SetupSilentAim)
 
 -- ================================================================
 -- 📍 DESENHAR ESP (Drawing API)
@@ -594,22 +615,13 @@ if DrawingAvailable then
 
     local function EnsureHealth(plr)
         local tbl = GetESP(plr)
-        local needed = {"HealthBg", "HealthFill", "HealthOutline"}
+        local needed = {"HealthBg", "HealthFill", "HealthOutlineT", "HealthOutlineB", "HealthOutlineL", "HealthOutlineR"}
         for _, name in ipairs(needed) do
             if not tbl[name] then
-                local line
-                if name == "HealthOutline" then
-                    line = Drawing.new("Square")
-                    line.Color = Color3.fromRGB(200, 200, 200)
-                    line.Thickness = 1
-                    line.Transparency = 1
-                    line.Visible = false
-                else
-                    line = Drawing.new("Line")
-                    line.Thickness = 1
-                    line.Transparency = 1
-                    line.Visible = false
-                end
+                local line = Drawing.new("Line")
+                line.Thickness = 1
+                line.Transparency = 1
+                line.Visible = false
                 tbl[name] = line
             end
         end
@@ -627,10 +639,11 @@ if DrawingAvailable then
         end
     end
 
-    -- ================================================================
-    -- 📍 LOOP PRINCIPAL DO ESP
-    -- ================================================================
+-- ================================================================
+-- 📍 LOOP PRINCIPAL DO ESP
+-- ================================================================
     RunService:BindToRenderStep("ESPLoop", 199, function()
+        local espOk, espErr = pcall(function()
         CleanupESP()
 
         for _, plr in ipairs(Players:GetPlayers()) do
@@ -740,7 +753,7 @@ if DrawingAvailable then
                 if humanoid then
                     local health = humanoid.Health
                     local maxHealth = humanoid.MaxHealth
-                    local pct = math.clamp(health / maxHealth, 0, 1)
+                    local pct = math.max(0, math.min(1, health / maxHealth))
 
                     local dist = (targetHip.Position - Camera.CFrame.Position).Magnitude
                     local boxHeight = (headScreen.Y - targetScreen.Y) * 1.3
@@ -780,15 +793,35 @@ if DrawingAvailable then
                     tbl["HealthFill"].Thickness = barWidth + 2
                     tbl["HealthFill"].Visible = true
 
-                    -- Outline (borda)
-                    tbl["HealthOutline"].From = Vector2.new(barX - 1, barY - 1)
-                    tbl["HealthOutline"].To = Vector2.new(barX + barWidth + 1, barY + barHeight + 1)
-                    tbl["HealthOutline"].Visible = true
+                    -- Outline (borda) - 4 linhas
+                    tbl["HealthOutlineT"].From = Vector2.new(barX - 1, barY - 1)
+                    tbl["HealthOutlineT"].To = Vector2.new(barX + barWidth + 1, barY - 1)
+                    tbl["HealthOutlineT"].Color = Color3.fromRGB(200, 200, 200)
+                    tbl["HealthOutlineT"].Thickness = 1
+                    tbl["HealthOutlineT"].Visible = true
+
+                    tbl["HealthOutlineB"].From = Vector2.new(barX - 1, barY + barHeight + 1)
+                    tbl["HealthOutlineB"].To = Vector2.new(barX + barWidth + 1, barY + barHeight + 1)
+                    tbl["HealthOutlineB"].Color = Color3.fromRGB(200, 200, 200)
+                    tbl["HealthOutlineB"].Thickness = 1
+                    tbl["HealthOutlineB"].Visible = true
+
+                    tbl["HealthOutlineL"].From = Vector2.new(barX - 1, barY - 1)
+                    tbl["HealthOutlineL"].To = Vector2.new(barX - 1, barY + barHeight + 1)
+                    tbl["HealthOutlineL"].Color = Color3.fromRGB(200, 200, 200)
+                    tbl["HealthOutlineL"].Thickness = 1
+                    tbl["HealthOutlineL"].Visible = true
+
+                    tbl["HealthOutlineR"].From = Vector2.new(barX + barWidth + 1, barY - 1)
+                    tbl["HealthOutlineR"].To = Vector2.new(barX + barWidth + 1, barY + barHeight + 1)
+                    tbl["HealthOutlineR"].Color = Color3.fromRGB(200, 200, 200)
+                    tbl["HealthOutlineR"].Thickness = 1
+                    tbl["HealthOutlineR"].Visible = true
                 end
             else
                 local tbl = ESPDraw[plr]
                 if tbl then
-                    local names = {"HealthBg", "HealthFill", "HealthOutline"}
+                    local names = {"HealthBg", "HealthFill", "HealthOutlineT", "HealthOutlineB", "HealthOutlineL", "HealthOutlineR"}
                     for _, n in ipairs(names) do
                         if tbl[n] then tbl[n].Visible = false end
                     end
@@ -807,6 +840,11 @@ if DrawingAvailable then
     Players.PlayerAdded:Connect(function(plr)
         if plr ~= LocalPlayer then
             EnsureLine(plr, "ESPLine")
+        end
+    end)
+        end)
+        if not espOk then
+            warn("[ESP] Erro no loop: " .. tostring(espErr))
         end
     end)
 end
